@@ -1,0 +1,700 @@
+From c16d48280b20ed3cba5f1667736a81233ee9d77b Mon Sep 17 00:00:00 2001
+From: Luminary <lucy@lventures.ch>
+Date: Fri, 6 Nov 2026 12:01:03 +0000
+Subject: [PATCH] Add project context for Claude Code
+
+- CLAUDE.md: working rules, architecture rules, safety, stack, planned layout
+- docs/requirements.md: requirements (Matrix chat bot, swappable parts)
+- docs/build-plan.md: architecture, 13 increments, tests and tooling per step
+- .gitignore: keeps data/, secrets and .env out of git
+- README.md: short overview and links
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01QyJZQDDoRKtMxoQXSy9U17
+---
+ .gitignore           |  28 ++++
+ CLAUDE.md            |  79 +++++++++++
+ README.md            |  10 ++
+ docs/build-plan.md   | 318 +++++++++++++++++++++++++++++++++++++++++++
+ docs/requirements.md | 207 ++++++++++++++++++++++++++++
+ 5 files changed, 642 insertions(+)
+ create mode 100644 .gitignore
+ create mode 100644 CLAUDE.md
+ create mode 100644 docs/build-plan.md
+ create mode 100644 docs/requirements.md
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..1421549
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,28 @@
++# Secrets and runtime data (never commit)
++.env
++.env.*
++!.env.example
++data/
++secrets/
++*.db
++*.sqlite
++*.sqlite3
++
++# Python
++__pycache__/
++*.py[cod]
++.venv/
++.pytest_cache/
++.mypy_cache/
++.ruff_cache/
++*.egg-info/
++dist/
++build/
++.coverage
++htmlcov/
++
++# Editors and OS
++.vscode/
++.idea/
++.DS_Store
++Thumbs.db
+diff --git a/CLAUDE.md b/CLAUDE.md
+new file mode 100644
+index 0000000..24b03bb
+--- /dev/null
++++ b/CLAUDE.md
+@@ -0,0 +1,79 @@
++# alfie-admin (Life Admin Assist)
++
++A chat bot for two people (a couple) to capture to-dos, backlog items and reminders, with a daily digest at 08:00 on weekdays. Users chat with the bot in Element (Matrix).
++
++Before any work, read:
++
++- `docs/requirements.md`: what the bot must do (the source of truth for behaviour).
++- `docs/build-plan.md`: architecture, increment order, tests per increment, tooling.
++
++## Current increment
++
++**Increment 1: echo bot.** Details in `docs/build-plan.md` under "Increment 1". When an increment is done, update this line and tick it off in the build plan.
++
++## How we work
++
++1. One increment at a time. Do not build anything from a later increment.
++2. Start each increment with the `grill-me` skill to agree scope and edge cases.
++3. Use the `tdd` skill: write the tests first, run them and show they fail, then stop and let the user review the tests before writing any implementation.
++4. Implement until all tests pass, then refactor with tests green.
++5. The user does one manual check from Element on a phone before the increment counts as done.
++6. Work on a branch per increment (e.g. `inc-01-echo-bot`). Never force-push, never rewrite pushed history, never delete branches without asking.
++
++## Architecture rules (do not break)
++
++- **Ports and adapters.** `src/lifeadmin/core/` holds the rules and never imports from `src/lifeadmin/adapters/`. A structure test enforces this.
++- **Swappable parts**, each behind a port in `core/ports.py`: messenger (Matrix now), extractor (rules parser now, LLM from increment 10), calendar feed, and the host machine (Mac Mini or a Windows laptop with WSL2, VPS last).
++- **The core returns replies, it never sends.** `handle(msg) -> list[Reply]`; the adapter sends.
++- **Time comes from a `Clock`.** Never call `datetime.now()` or `date.today()` in the core.
++- **Identity is mapped in the adapter.** The core sees internal user IDs (`user_a`, `user_b`), never Matrix IDs.
++- **All data lives in one folder** (`data_dir` in config): SQLite, encrypted files, `secrets/`. Moving hosts means copying that folder. Only one host runs the bot at a time.
++- **Plain text replies.** Provider-only features (reactions, edits, threads) stay inside the adapter.
++
++## Safety and privacy
++
++- No secrets in git. Matrix token and device ID go in `data/secrets/`; API keys in `.env`. Both are git-ignored. Never print tokens or keys in output or logs.
++- The bot logs in once via `scripts/login.py`. Never log in on every start (it creates a new device each time).
++- Automated tests never touch matrix.org. End-to-end tests use a local Synapse server in Docker (GitHub Actions).
++- Logs record event IDs, intents and errors, not full message text, unless debug logging is switched on.
++- Only allowlisted Matrix IDs get replies; everyone else gets nothing.
++
++## Stack
++
++- Python 3.12, managed with `uv`.
++- `mautrix-python` for Matrix. Check call names against the mautrix docs (https://docs.mau.fi/python/latest/), not from memory.
++- `pytest`, `pytest-asyncio`. SQLite from the standard library (from increment 2).
++- Dates: UK format (DD/MM/YYYY), time zone `Europe/London`, must handle clock changes.
++
++## Commands (to be set up in increment 1)
++
++```
++uv sync                         # install dependencies
++uv run pytest                   # unit + contract tests
++uv run pytest tests/e2e         # end-to-end, needs the local test Matrix server (Docker)
++uv run python scripts/login.py  # one-time bot login, writes data/secrets/bot.json
++uv run lifeadmin                # run the bot
++```
++
++## Planned layout
++
++```
++src/lifeadmin/
++  core/        bot.py  commands.py  items.py  intents.py  digest.py  ports.py
++  adapters/
++    matrix/    client.py  mapping.py
++    extract/   rules.py  claude.py  ollama.py  fake.py
++    calendar/  ics_feed.py
++    fake_messenger.py
++  store/       sqlite.py
++  main.py      composition root: the only place that picks adapters
++deploy/        macos/ (launchd)  wsl/ (systemd)  docker/ (VPS)
++scripts/       login.py  create_test_users.py
++tests/         unit/  contract/  e2e/  evals/
++```
++
++## Environment notes
++
++- Developed on Windows 11 with WSL2 Ubuntu and on macOS. Keep code OS-neutral: `pathlib` for paths, no shell-specific scripts in the core.
++- Keep the repo inside the Linux file system (`~/projects/...`), not on the Windows C: drive.
++- Element encrypts direct messages by default and it can't be switched off later. Until increment 9, test in a room created with encryption off.
+diff --git a/README.md b/README.md
+index f094c74..914ce18 100644
+--- a/README.md
++++ b/README.md
+@@ -1 +1,11 @@
+ # alfie-admin
++
++Life Admin Assist: a private chat bot for two people to capture to-dos, backlog items and reminders, with a calm daily digest at 08:00 on weekdays. You chat with it in Element (Matrix).
++
++Built in small increments, tests first, so the chat provider, the text reader (rules parser or LLM) and the host machine can each be swapped later.
++
++- What it does: [docs/requirements.md](docs/requirements.md)
++- How we build it, in which order, with which tests: [docs/build-plan.md](docs/build-plan.md)
++- Rules for Claude Code: [CLAUDE.md](CLAUDE.md)
++
++Status: increment 1 (echo bot) not started.
+diff --git a/docs/build-plan.md b/docs/build-plan.md
+new file mode 100644
+index 0000000..19728ae
+--- /dev/null
++++ b/docs/build-plan.md
+@@ -0,0 +1,318 @@
++# Life Admin Assist – build plan
++
++06/11/2026 · Luminary · version 3 (order: rules first, LLM at 10, server last at 13; host swappable between Mac Mini and Miki's laptop)
++Status: increment 1 not started. Requirements: [requirements.md](requirements.md).
++
++## Progress
++
++- [ ] 1 Echo bot
++- [ ] 2 Restart safety
++- [ ] 3 Rules parser and storage
++- [ ] 4 Lists and commands
++- [ ] 5 Two users and sharing
++- [ ] 6 Daily digest (soft launch)
++- [ ] 7 Reminders and recurring
++- [ ] 8 Archive and export
++- [ ] 9 End-to-end encryption
++- [ ] 10 LLM extractor
++- [ ] 11 Calendar feed
++- [ ] 12 Voice notes and screenshots
++- [ ] 13 Move to a server
++
++## Decisions this plan assumes
++
++Change any of these before increment 1 starts; later it gets expensive.
++
++| # | Decision | Why | Alternative |
++|---|---|---|---|
++| 1 | Python, with the mautrix-python library for Matrix | Matches the setup guide (uv); readable for learning | Go (mautrix-go) is more actively maintained; mautrix-python's last release found was Jan 2025 |
++| 2 | Four swappable parts: chat provider, item extractor (rules parser or LLM), host machine, calendar feed | Each can change without touching the rules | Hard-wire them (faster at first, expensive to change) |
++| 3 | Rules-only parser first (increment 3), LLM later (increment 10). Both fill the same slot; the parser stays as the LLM's fallback | Bot is usable early without AI cost; real messages collected meanwhile become the LLM's test set | LLM first |
++| 4 | Start in an **unencrypted** Matrix room; end-to-end encryption is increment 9 | Encryption is the most common reason Matrix bots break | Encrypted from day one |
++| 5 | Automated end-to-end tests run against a **local test Matrix server** (Synapse in Docker) on GitHub Actions, never matrix.org | matrix.org has rate limits; tests would be slow and flaky | Manual checks only |
++| 6 | Calendar as a read-only subscription feed (.ics), reached via Tailscale until the server | One-way by design, no iCloud login stored | CalDAV into iCloud (needs an app-specific password) or self-host Radicale |
++| 7 | Runs on the Mac Mini **or** Miki's laptop until the last step; a rented server (VPS) is increment 13 | Everything is built and used locally first | Server earlier |
++| 8 | Only one host runs the bot at a time | Two copies on one bot account would both reply to every message | Automatic hand-over between hosts (not needed for two users) |
++
++## End architecture
++
++```mermaid
++flowchart TB
++  E["Element on both iPhones"] <--> M["matrix.org homeserver"]
++  CAL["iPhone Calendar: Life admin"]
++  subgraph HOST["Host: Mac Mini or Miki's laptop, VPS last (swappable)"]
++    MA["Messenger adapter: Matrix, swappable"]
++    S["Scheduler: digest, reminders"]
++    C["Core: router, items, rules"]
++    ST[("Store: data folder, SQLite, encrypted files")]
++    X["Extractor: rules parser or LLM, swappable"]
++    F["Calendar feed: .ics, read-only"]
++  end
++  M <--> MA
++  MA <--> C
++  S --> C
++  C <--> ST
++  C <--> X
++  C --> F
++  F -- "subscribed (Tailscale, later HTTPS)" --> CAL
++  X --> CL["Claude API"]
++  X -.-> OL["Ollama (local)"]
++```
++
++Swappable: messenger adapter, extractor, calendar feed, host. The core and the store format never change when one of them changes.
++
++## Implementation
++
++### One process, three loops
++
++```
++main.py (composition root)
++ ├─ Matrix sync loop     receives messages, sends replies
++ ├─ Scheduler loop       08:00 digest, reminders        (increment 6)
++ └─ Small web server     calendar .ics feed             (increment 11)
++```
++
++All three run in one Python asyncio process. `main.py` is the only file that knows which adapters are used: it reads the config, builds the Matrix adapter, the extractor, the store and the clock, and hands them to the core. Swapping a part means changing the config (and, for a new provider, adding one adapter).
++
++### Ports: what the core depends on
++
++```python
++# core/ports.py
++class Extractor(Protocol):                 # rules parser, Claude, Ollama
++    async def extract(self, text: str, today: date, user: str) -> Intent: ...
++
++class ItemStore(Protocol):
++    def add(self, item: Item) -> int: ...
++    def open_items(self, user: str) -> list[Item]: ...
++
++class Clock(Protocol):
++    def now(self) -> datetime: ...
++
++@dataclass
++class Incoming:
++    user: str            # internal id, e.g. "user_a", never a Matrix ID
++    conversation: str
++    text: str
++    event_id: str        # for de-duplication
++
++@dataclass
++class Reply:
++    conversation: str
++    text: str
++```
++
++```python
++# core/bot.py
++async def handle(msg: Incoming) -> list[Reply]:
++    if cmd := match_command(msg.text):          # /list, done 3, move 5 to Fri
++        return cmd.run(store, clock, msg)
++    intent = await extractor.extract(msg.text, clock.now().date(), msg.user)
++    item = items.create(intent, msg.user, clock.now())
++    return [Reply(msg.conversation, confirm_line(item))]
++```
++
++The core returns replies instead of sending them, so tests call `handle()` with a fake extractor, an in-memory store and a fixed clock, and check the replies. No network.
++
++From increment 10, the configured extractor is the LLM wrapped with the rules parser as fallback: if the model is slow (about 8 seconds, to stay under the 10-second requirement), down, or returns invalid output twice, the rules parser handles the message instead.
++
++### What happens to one message
++
++1. Sync: the Matrix adapter keeps a long-poll `/sync` open to matrix.org.
++2. Filter (adapter): drop the bot's own messages, non-text (until increment 12), senders not on the allowlist, edits (Element sends an edit as a new event whose body starts with `* `), and anything older than the bot's first start.
++3. Dedupe: skip event IDs already in the processed table.
++4. Map identity: `@name:matrix.org` becomes `user_a`, so items don't depend on the provider.
++5. Core: `handle()` returns replies.
++6. Send: plain text; long lists split into several messages; "typing…" shown while the extractor works.
++7. Persist: save the sync position (`next_batch`) and mark the event processed.
++
++### Matrix adapter
++
++- Login once in `scripts/login.py`, not on every start. It saves the access token and device ID to `data/secrets/bot.json` (git-ignored, readable only by you). Logging in on every start creates a new device each time, which breaks encryption later.
++- Sync filter asks only for messages and invites.
++- Auto-join only invites from allowlisted users.
++- On a rate-limit answer (`M_LIMIT_EXCEEDED`), wait and retry.
++- matrix.org uses the new login system (MAS) since April 2025; password login still works through a compatibility layer, but such tokens may expire (unconfirmed for matrix.org). If they do, the adapter switches to device-code login (you approve the bot once via a link).
++- mautrix-python handles sync, sending and later encryption. Exact call names are checked against the mautrix docs in increment 1.
++
++### Extractor: rules parser, then LLM
++
++- **Rules parser (increment 3)**: #tags, #us, `!`/urgent, dates in a fixed list of formats (14/11, Fri, by Friday, tomorrow, next week), "waiting for" sets Waiting on. Whatever is left becomes the title. Anything without a recognised date goes to the backlog, and the reply says so.
++- **LLM adapters (increment 10)**: Claude (Anthropic SDK, structured output) and Ollama (same schema via structured output). Same prompt for both: today's date, the user's existing project tags, the Intent schema. Output validated against the Pydantic `Intent` model; one retry if invalid; then the rules parser.
++- Provider is one config line: `extractor = "rules"`, `"claude:haiku"` or `"ollama:qwen2.5"`.
++- Ollama needs a reasonably strong machine: fine on the Mac Mini, slow on a laptop without a GPU, not usable on a cheap VPS. On those, use the Claude API.
++- With the Claude API, item text goes to Anthropic; health items stay vague as the requirements say.
++
++### Config, secrets, logs
++
++```toml
++# config.toml (in git)
++homeserver = "https://matrix-client.matrix.org"
++bot_id = "@lifeadmin-bot:matrix.org"
++timezone = "Europe/London"
++extractor = "rules"
++data_dir = "~/lifeadmin-data"
++
++[users]
++"@you:matrix.org" = "user_a"
++"@husband:matrix.org" = "user_b"
++```
++
++Secrets (Matrix token, later the Anthropic API key) live in `.env` and `data/secrets/`, never in git. Logs record event IDs, intents and errors, not full message text (switchable for debugging).
++
++### Repo layout
++
++```
++src/lifeadmin/
++  core/        bot.py  commands.py  items.py  intents.py  digest.py  ports.py
++  adapters/
++    matrix/    client.py  mapping.py
++    extract/   rules.py  claude.py  ollama.py  fake.py
++    calendar/  ics_feed.py
++    fake_messenger.py
++  store/       sqlite.py
++  main.py
++deploy/        macos/ (launchd)  wsl/ (systemd)  docker/ (VPS)
++scripts/       login.py  create_test_users.py  move_host.md
++tests/         unit/  contract/  e2e/  evals/
++CLAUDE.md      rules: tests first, core never imports adapters, no secrets in git
++```
++
++## Hosts (swappable)
++
++The code is the same everywhere. What differs per host lives in `deploy/` and in the config.
++
++| | Mac Mini | Miki's laptop (Windows 11 + WSL2 Ubuntu) | VPS (increment 13) |
++|---|---|---|---|
++| Runs the bot with | `uv run lifeadmin` | `uv run lifeadmin` inside Ubuntu | Docker |
++| Keeps it running | launchd service | systemd service inside WSL2 | Docker restart policy |
++| Always on? | Yes | Only while the laptop is awake; WSL2 may also stop when no window is open (to check) | Yes |
++| Ollama | Usable | Slow (no GPU); use Claude API | Not usable; use Claude API |
++| Calendar feed reachable via | Tailscale on the Mac | Tailscale on Windows; WSL2 networking needs checking | HTTPS (Caddy) or Tailscale |
++
++**Moving the bot between hosts**
++
++1. Stop the bot on the old host.
++2. Copy the whole data folder (`data_dir`: SQLite file, encrypted screenshots, `secrets/`, encryption keys). Never log in again on the new host, or the bot gets a new device.
++3. Start the bot on the new host.
++
++A start-up check refuses to run if the data folder says another host is running it (a lock file with host name and last heartbeat), so two copies never answer at once.
++
++**Laptop sleep**: if the 08:00 digest is missed because the machine was asleep, the bot sends it as soon as it wakes, marked "late", up to 12:00. After that it is skipped and logged. This also covers the Mac after a power cut. (Proposal; confirm as a requirement.)
++
++## Accounts
++
++| Account | When | How |
++|---|---|---|
++| Bot (`@lifeadmin-bot:matrix.org`) | Before increment 1 | Normal matrix.org account, created at app.element.io in a private window. Use a separate email alias if asked. Save the password and, if offered, the recovery key (needed in increment 9). Then run `scripts/login.py` once so the bot gets its own device, and sign out of the browser. |
++| Yours | Before increment 1 | Normal matrix.org account in Element |
++| Your husband's | Before increment 5 | Normal matrix.org account in Element |
++| Test users | Automatic | Created by `scripts/create_test_users.py` on the local test server; thrown away after each run |
++| Tailscale | Before increment 11 | Free personal account; app on the host and both iPhones |
++| Anthropic API key | Before increment 10 | console.anthropic.com, pay as you go |
++| VPS | Before increment 13 | Provider to choose |
++
++## How we test
++
++| Layer | What it checks | Speed | Runs |
++|---|---|---|---|
++| Unit | Pure rules: commands, parser, reply text, dates, intent validation | Milliseconds | Every save and push |
++| Contract | The core with a fake messenger and a fake extractor: message in, reply out | Under a second | Every push |
++| End-to-end | A test account sends a real message through the local test Matrix server and checks the reply | Under a minute | Every push (GitHub Actions, Linux) |
++| Host | Unit and contract tests on both Linux and macOS, so the Mac Mini and the laptop (WSL2 is Linux) are both covered | Minutes | Every push (GitHub Actions matrix) |
++| Evals (from increment 10) | ~30 real saved messages through the real LLM, scored against expected intents | Minutes, costs a little | By hand when the model or prompt changes |
++
++Rules:
++
++- Tests are written first and must fail before code is written.
++- Time comes from a clock object, never read directly, so tests can set any day and time, including Fridays, weekends and UK clock changes.
++- No real passwords, tokens or API keys in tests or in GitHub.
++- One structure test checks that `core/` never imports from `adapters/`. If the rule breaks, the build fails.
++
++## Working loop per increment
++
++1. Agree: `grill-me` on the goal and edge cases. Write down what is in and out.
++2. Tests: `tdd` writes the tests. You review them before any code is written (main review point).
++3. Build: Claude Code writes code until all tests pass.
++4. Tidy: refactor with tests still passing.
++5. Try it: one manual check from Element on your phone.
++6. Save: commit and push; GitHub Actions must be green.
++7. Update: tick the increment off here and in `CLAUDE.md`, and note anything learned.
++
++## Increment 1: echo bot
++
++**Goal**: you send the bot a message in Element and it replies "Got: <your text>".
++
++**In scope**: bot login via `scripts/login.py`; listen and reply in the same conversation; allowlist; ignore own messages, non-text, edits and old messages on first start; settings in `config.toml`, token in `data/secrets/`; project skeleton (`pyproject.toml` with uv, pytest config, GitHub Actions workflow).
++
++**Out of scope**: parsing, storage, commands, encryption, LLM, calendar, digests, restarts.
++
++**Tests written first**
++
++| Layer | Test |
++|---|---|
++| Unit | "hello" gives "Got: hello" |
++| Unit | The bot's own message, a non-allowlisted sender, a non-text message and an edit (`* ` body) each give no reply |
++| Unit | A reply that quotes an earlier message is answered on its new text only |
++| Contract | One allowlisted message produces exactly one reply, in the same conversation |
++| Contract | Messages older than the bot's first start get no reply |
++| Contract | The core runs with the fake messenger only, no Matrix library loaded |
++| Contract | An expired or invalid token stops the bot with a clear "run scripts/login.py" message |
++| End-to-end | Test user sends "ping"; the bot replies "Got: ping" within 10 seconds |
++| End-to-end | A stranger's message gets no reply within 5 seconds |
++| Structure | `core/` imports nothing from `adapters/` |
++
++**Setup note**: Element encrypts direct messages by default and encryption can't be turned off later. For increments 1 to 8, create a **room** with encryption switched off and invite the bot.
++
++**Done when**: all tests green on GitHub Actions and a message from your phone gets the echo back.
++
++## Increments 2 to 13
++
++Each row follows the same loop. Tests listed are the key ones.
++
++| # | Increment | Key tests written first | New tooling and accounts |
++|---|---|---|---|
++| 2 | Restart safety | Kill and restart mid-conversation: no double replies; a message sent while the bot was down is answered after restart; sync position and processed events saved in the data folder; lock file stops a second copy | SQLite (built into Python); temporary data folder in tests |
++| 3 | Rules parser and storage | `#home frame prints` gives backlog in Home; `#job review contract by Fri` gives a to-do due this Friday; `#us` sets shared; `!` sets urgent; `14/11` reads as 14 November (UK format); unknown date wording goes to backlog and the reply says so; items saved and survive a restart | Nothing new |
++| 4 | Lists and commands | `/list` with 30+ items shows all, grouped and numbered; numbers stable within a day; `done 3`, `move 5 to Fri`, `urgent 5`, `backlog 12`, `schedule 3 Tue`, `drop 4`; `done router` asks when two items match; long lists split | Nothing new |
++| 5 | Two users and sharing | A #us item appears for both and either can tick it off; items without #us stay private; each user gets their own replies | Your husband's Matrix account |
++| 6 | Daily digest | With a test clock: 08:00 Mon–Fri only; one-liner when nothing is due; Now then projects; Friday adds numbered backlog; weekend items in Friday's digest; correct on UK clock-change days; each user gets their own digest; missed digest sent late after wake until 12:00 | APScheduler (or a small own loop); `zoneinfo`; launchd (Mac) or systemd in WSL2 (laptop) |
++| 7 | Reminders and recurring | Ticking a recurring item sets the next date; waiting-on nudges after 5 days then weekly; `daily 5` override; timed reminders ("Saturday morning" = 09:00); defaults read from one settings file | `python-dateutil` for repeat rules |
++| 8 | Archive and export | `/done` lists recent items; search finds old ones; export writes everything to one file and reads it back; host move procedure tested (copy data folder, start elsewhere) | Nothing new |
++| 9 | End-to-end encryption | The end-to-end tests pass in an encrypted room; bot device is cross-signed with the recovery key; bot still decrypts after restart and after a host move | mautrix crypto extras; recovery key in `data/secrets/`. Risk: Python Matrix encryption relies on libolm, which Matrix is believed to have deprecated (check). This may be where switching the adapter to Go pays off; the modular design limits that to one folder |
++| 10 | LLM extractor | Free text gives the same Intent format as the parser; the same contract tests pass with rules, fake, Claude and Ollama extractors; invalid output retried, then rules parser; timeout falls back within 10 s; eval set built from real messages saved since increment 6 | Pydantic; Anthropic API key and `anthropic` SDK; Ollama and a model (Mac Mini only); `tests/evals/` |
++| 11 | Calendar feed | Dated items appear in the generated .ics feed; titles only; changing a due date updates the event; feed URL needs a secret token; iPhone subscription shows the events; refresh delay measured | `icalendar`; small web server (aiohttp); Tailscale on the host and both iPhones |
++| 12 | Voice notes and screenshots | Sample voice note becomes an item; sample screenshot fills due date and reference; `show router` sends it back; ticking off deletes the screenshot; screenshot files encrypted on disk | Speech-to-text adapter (mlx-whisper on the Mac, an API on the laptop); ffmpeg for Element's voice format; vision through the LLM extractor; `cryptography`; sample audio and image files in tests |
++| 13 | **Move to a server (last)** | Full test suite passes on the server; data folder moved with the host procedure; daily backup restores cleanly; an alert fires if a digest is missed; calendar feed reachable over HTTPS (or Tailscale) | VPS account; Docker and Compose; Caddy for HTTPS; restic for backups; healthchecks.io for missed-digest alerts; total cost checked against £5/month |
++
++**Soft launch**: from increment 6 the bot is useful daily (add, list, tick off, digest) on the Mac Mini or the laptop. Start using it then; real messages saved from then on become the LLM eval set in increment 10. The two-week v1 test starts once all acceptance criteria pass.
++
++## Calendar
++
++- The bot publishes a read-only `.ics` feed at a secret address. Both iPhones subscribe once: Settings → Calendar → Accounts → Add Subscribed Calendar.
++- One-way by design, matching the requirement. No iCloud login is stored.
++- iPhones refresh subscribed calendars on their own schedule, so new events can take a while to appear (measured in increment 11).
++- Until the server, the phones reach the feed through Tailscale; nothing is exposed to the public internet. When the host moves, the feed address changes unless it uses the Tailscale name of a fixed machine; plan the address in increment 11.
++- Alternatives if the delay is a problem: write into a shared iCloud calendar via CalDAV (faster, but the bot holds an iCloud app-specific password, which opens more than the calendar), or self-host Radicale (more to run; worth it only if edits in Calendar should sync back).
++
++## Risks
++
++| Risk | What we do about it |
++|---|---|
++| mautrix-python is maintained less actively than its Go sibling | All Matrix code stays in `adapters/matrix/`, so swapping library or language touches one folder |
++| matrix.org compatibility tokens may expire | Test in increment 1; device-code login as fallback |
++| Element's message formats (edits, quoted replies, formatted text) | Samples of each in increment 1 tests |
++| Rules parser misses many real phrasings before increment 10 | Unclear dates go to backlog with a clear reply; misses are saved and drive the LLM eval set |
++| LLM misreads a date or the list (personal vs shared) | One-line confirmation on every add, eval set, rules parser as fallback |
++| Element's encryption defaults block an unverified bot in encrypted rooms | Unencrypted room until increment 9; cross-signing tested explicitly |
++| Laptop sleeps or WSL2 stops, so digests are missed | Late digest on wake; prefer the Mac Mini for daily use; server in increment 13 |
++| Two hosts run the bot at once | Lock file check at start-up; move procedure in increment 8 |
++| Scope creep | New ideas go on the v2 list, not into the current increment |
++
++## Open questions still affecting this plan
++
++See [requirements.md](requirements.md). The ones that block an increment:
++
++- Before increment 6: confirm the "late digest after wake" rule.
++- Before increment 10: which LLM provider first, and whether health items may go to a cloud model (question 7).
++- Before increment 11: confirm the subscription feed approach after testing the iPhone refresh delay (question 6).
++- Before increment 13: which VPS and the budget (questions 2 and 3).
+diff --git a/docs/requirements.md b/docs/requirements.md
+new file mode 100644
+index 0000000..a5f1ae8
+--- /dev/null
++++ b/docs/requirements.md
+@@ -0,0 +1,207 @@
++# Life admin assistant – requirements
++
++28 Oct 2026 · @M · updated 06/11/2026
++Copied from the Life Admin Assist project on claude.ai (`claude/life-admin-requirements.md`). Edit here from now on and keep the two in step, or treat this repo copy as the master.
++
++**Update 06/11/2026:** we build a chat bot on Matrix, used through the Element app. Telegram is no longer the plan, and the phone-app route is dropped. The bot is built in a modular way so the chat provider, the AI model and the machine it runs on can be swapped later without rewriting the rules. Build order, architecture and tests: [build-plan.md](build-plan.md).
++
++## Summary
++
++A personal life admin assistant for me and my husband: capture to-dos, backlog items and long-term reminders in seconds, and get one calm digest at 08:00 on weekdays. We use it by chatting with a bot in Element (Matrix).
++
++This is a learning project: I want to build it myself with Claude Code, with your advice on the engineering choices.
++
++### Decisions so far
++
++| Topic | Decision |
++|---|---|
++| Interface | Chat bot only. No app. |
++| Chat provider | Matrix, using the Element app; accounts on matrix.org to start. |
++| Reading free text | A rules parser first; an AI model (Claude API, or Ollama locally) added later, with the parser as fallback. |
++| Modularity | The chat provider, the text reader (parser or AI model) and the host machine are each swappable. Rules, data and digests depend on none of them. |
++| Hosting | Runs on the Mac Mini or Miki's laptop first, one at a time; a rented server (VPS) is the very last step. |
++| Build style | Small increments, each with automated tests written first. |
++
++## Requirements
++
++### What an item stores
++
++What's saved behind the scenes for each item. Only the title is needed; every other field is filled in when I give it, or falls back as shown. "Send back wifi router by Saturday #us" stores a title, due date, project (Other) and shared, and nothing else.
++
++| Field | Example | Set by | If not given |
++|---|---|---|---|
++| Title | Return old router | Me, in plain words | Always needed |
++| Type | To-do, Waiting on, Backlog, Recurring | Worked out from what I write; I can correct it | Worked out |
++| Project | Home | My #tag | Other |
++| Shared | Yes | #us tag | Mine only |
++| Due date | 14/11/2026 | Me, or read from a screenshot | Goes to the backlog |
++| Repeat rule | Every Saturday; every January | Me, in plain words | One-off |
++| Reminder rule | Daily until done | Me ("remind me daily") | Default for its type |
++| Urgent | Yes | Me ("urgent" or "!") | Not urgent |
++| Key facts | Ref VM-48213, prepaid label | Read from a screenshot or typed by me | Empty |
++| Screenshot | Email image | Me; deleted when the item is done | None |
++| Status | Open, done | Changes when I tick it off | Open |
++| Created / completed dates | 28/10/2026 | Automatic | Automatic |
++
++### Item types and default reminders
++
++| Type | How it's created | Default reminder |
++|---|---|---|
++| To-do | Anything with a date | In the digest from 3 days before; flagged on the day |
++| Waiting on | "waiting for…" | Chase nudge after 5 days, then weekly |
++| Backlog | Anything with **no date** | Never in the daily digest; reviewed in Friday's digest |
++| Recurring – appointments | "every Saturday", "every January", "every 6 months" | In the digest from 4 weeks before |
++| Recurring – renewals | Same | In the digest from 2 weeks before |
++
++Defaults live in one place and can be changed later in a sentence. A waiting-on item becomes a to-do when I add the deadline (e.g. by sending the screenshot).
++
++### Projects and sharing
++
++1. A #tag sets the project (#home, #job); a new tag creates a new project; no tag = Other.
++2. #us marks an item as shared. My husband can see, edit and tick off shared items. Everything else is mine only.
++3. Urgent items are marked with "!". No extra alert.
++4. No snooze: overdue items stay at the top until I tick them off or change the date.
++
++### Daily digest
++
++1. Sent at 08:00, Monday to Friday. None at weekends.
++2. If nothing is due: a one-line message ("Nothing due today").
++3. Order: Now (overdue + due today, all projects) listed in full, then one line per project with its count and next item.
++4. Friday's digest adds a numbered Backlog section to review.
++5. My husband gets his own digest: his own items plus shared items.
++6. Items due at the weekend appear in Friday's digest. If I give a time ("Saturday morning" = 09:00), I also get one reminder message at that time.
++7. Proposed: if the machine was asleep at 08:00, the digest is sent as soon as it wakes, marked "late", up to 12:00 (to confirm).
++
++### Screenshots
++
++1. I can attach a screenshot when adding or updating an item.
++2. The AI reads it and pulls out 2–3 key facts (deadline, reference, what to do), which I confirm.
++3. The screenshot is kept, stored encrypted, so I can look at it again.
++4. It is deleted automatically when the item is done.
++
++### Calendar
++
++1. A separate "Life admin" calendar on my iPhone, which I can show or hide like my other calendars.
++2. Shared with my husband so it appears on his phone too.
++3. One-way: the assistant adds and updates events; moving an event in Calendar doesn't change the item.
++4. Only dated items; titles only, no notes or screenshots.
++
++### Archive
++
++Done items are kept forever, in a Done archive I can search.
++
++## The chat bot
++
++Each of us has a private chat with the same bot (not a group chat).
++
++### Messages and commands
++
++| I send | What the bot does |
++|---|---|
++| Free text, e.g. `#home #us send back router by 14/11` | Creates the item, replies with one line of what it understood |
++| Text with no date | Adds it to the backlog and says so |
++| `pay cleaner weekly on Saturday morning` | Creates a weekly item; reminder Saturday 09:00; the next one is set when I tick it off |
++| `remind me every January to book the health check` | Creates a yearly item that appears in January's first digest |
++| `remind me daily` (with an item) or `daily 5` | Changes that item's reminder to daily until done |
++| Voice note | Transcribes, then treats it as text |
++| Screenshot (with or without text) | Reads it, attaches it to the matching item or creates one, replies with the key facts |
++| `done 3` / `done router` | Ticks it off; asks if unsure which item |
++| `urgent 5` | Marks item 5 urgent |
++| `move 5 to Fri` | Changes the due date |
++| `backlog 12` | Moves item 12 to the backlog |
++| `schedule 3 Tue` / `drop 4` | Backlog review actions |
++| `show router` | Re-sends the screenshot and key facts |
++| `/list` | Full numbered list: Now, then each project, one line per item |
++| `/backlog` | Numbered backlog list |
++| `/recurring` | Recurring items and their next dates |
++| `/done` | Recently completed items (archive) |
++
++### Functional requirements
++
++1. One line per item in lists: number, "!" if urgent, title, short date, "waiting" or "(us)" where relevant.
++2. Numbers stay the same within a day so "done 14" is reliable.
++3. No limit on list length; if a list is too long for one message, it splits into consecutive messages (the size limit is set per chat provider).
++4. The bot always confirms what it understood in one line, so I can correct it ("no, #job").
++5. If the bot can't tell which item I mean, it asks, rather than guessing.
++6. Only my husband's and my Matrix accounts (a fixed list of Matrix IDs) can use the bot; anyone else gets no reply.
++7. Commands (`/list`, `done 3` etc.) work without the AI. Once the AI is added, the rules parser handles free text whenever the AI is slow or down.
++
++### Swappable parts (modularity)
++
++1. All Matrix-specific code lives in one adapter. The adapter turns incoming messages into one standard shape (who sent it, which conversation, text, attachments) and sends replies.
++2. Rules, data, digests and the text reader never use Matrix code directly. Switching provider means writing a new adapter, not changing the rules.
++3. User identity is mapped from the provider's ID (e.g. `@name:matrix.org`) to our own user ID, so stored items don't depend on the provider.
++4. Replies use plain text plus attachments. Provider-only features (reactions, edits, threads) are optional extras inside the adapter.
++5. The server address and bot account are settings, so moving from matrix.org to our own Matrix server needs no code change.
++6. The text reader (rules parser, Claude or Ollama) sits behind one slot and always returns the same item format. It is chosen with one setting.
++7. The host (Mac Mini, Miki's laptop, later a server) is swappable: the same code runs on each, all data lives in one folder, and moving means copying that folder. Only one host runs the bot at a time.
++
++### Acceptance criteria
++
++- [ ] Adding `#job review contract by Fri` creates a to-do in Job offer, due this Friday.
++- [ ] Adding `#home frame prints` with no date puts it in the backlog.
++- [ ] Ticking an item off deletes its screenshot.
++- [ ] The digest arrives at 08:00 Mon–Fri, never at weekends, with a one-liner when nothing is due.
++- [ ] Friday's digest includes the numbered backlog.
++- [ ] An item tagged #us appears for my husband and he can tick it off.
++- [ ] Dated items appear in the "Life admin" calendar on both phones.
++- [ ] Forwarding the router email screenshot fills in the due date and reference; `show router` sends it back.
++- [ ] A voice note is turned into an item.
++- [ ] `done 3` ticks off item 3 and removes it from lists.
++- [ ] `/list` with 30+ items shows every item, grouped and numbered.
++- [ ] A stranger messaging the bot gets nothing back.
++- [ ] The core rules pass their tests with a fake chat provider and a fake text reader, without Matrix or a real model.
++- [ ] Moving the bot from one host to another by copying the data folder keeps all items and needs no new login.
++
++### Non-functional requirements
++
++How well it must work, and the limits it must work within.
++
++| Area | Requirement |
++|---|---|
++| Users | Two: me and my husband. No sign-up for anyone else. |
++| Platform | iPhone for both of us, Element app. |
++| Privacy | Store only what's needed: title, dates, status, short key facts. No Meta products. Health items kept vague by default ("Annual check-up"). |
++| Encryption | Screenshots and data stored encrypted on the host ("encrypted storage"). End-to-end encryption in chat is not required for the first increments; Matrix supports it and it is planned as its own increment. |
++| Modularity | Chat provider, text reader and host swappable (see above). |
++| Cost | Under £5/month in total (hosting, AI use, any accounts). Flag anything that breaks this. |
++| Reliability | The 08:00 digest arrives every weekday; a missed digest is a bug. |
++| Speed | Adding an item, including the AI reading it, takes under 10 seconds. |
++| Dates | UK format (DD/MM/YYYY), UK time zone, handles clock changes. |
++| Language | Plain English replies, short, no chatty filler. |
++| Data | Nothing lost if the bot restarts. A way to export everything (e.g. to a file) if we ever move it. |
++| Testing | Every increment ships with automated tests, written before the code. |
++
++## v1 scope and definition of done
++
++v1 is the first version we build and start using.
++
++Definition of done for v1: my husband and I use it daily for two weeks without falling back to another list, the 08:00 digest arrives every weekday, and all acceptance criteria pass. New ideas during those two weeks go on a v2 list, not into the build.
++
++## Open questions to discuss
++
++| # | Question | Why it matters | Status |
++|---|---|---|---|
++| 1 | Chat bot or app? | Decides what we build | Decided: Matrix chat bot, provider swappable |
++| 2 | Where does the data live and where does the bot run: laptop, home computer or small rented server (VPS)? | Digest needs a machine that is always on | Decided: Mac Mini or Miki's laptop first (swappable, one at a time), VPS as the last step; which VPS still open |
++| 3 | What do we actually need to pay for, and does it fit under £5/month? | Hosting, AI use | Open |
++| 4 | How do we set up encrypted storage for screenshots and data, and is it on by default? | My privacy requirement | Open |
++| 5 | Matrix privacy: matrix.org sees who talks to whom and when; screenshots stay in chat history. Do we turn on end-to-end encryption, self-host later, or set message retention? | I want exposure kept small | Open: encryption planned as its own increment |
++| 6 | Calendar: how do we create a shared "Life admin" calendar both phones see, and how can the bot add to it safely (subscription link vs storing an iCloud login)? | The bot can't reach my phone's calendar directly | Proposed: read-only subscription feed (.ics), reached via Tailscale until the VPS; confirm after testing how fast iPhones refresh it |
++| 7 | Which AI service reads screenshots, voice notes and turns my text into items, and what does it cost? | Core feature; affects cost and privacy | Proposed: rules parser first; then Claude API or Ollama, swappable; cost to check |
++| 8 | Login for two people | Only we two should get in | Decided: fixed list of Matrix IDs |
++| 9 | Voice commands to change items ("move router to Friday"): v1 or later? | Voice notes that add items are already in | Open |
++| 10 | How do we test the 08:00 digest without waiting for 08:00? | Reliability is a requirement | Decided: the clock is passed into the code, so tests can set any day and time |
++| 11 | How do I build this myself in Claude Code: what order, and where do you want to review? | It's a learning project | Decided: see [build-plan.md](build-plan.md) |
++| 12 | Missed digest when the machine was asleep: send late (until 12:00) or skip? | Laptop hosting makes this likely | Open (proposal: send late) |
++
++## Assumptions to confirm
++
++I filled these gaps myself; each is a one-line check.
++
++1. My husband's digest also arrives at 08:00 Mon–Fri and contains shared items plus his own items.
++2. Items he adds without #us are private to him, the same as mine.
++3. Recurring items are added in plain words ("#health annual check-up every December"), and ticking one off sets the next date.
++4. A waiting-on item with no deadline stays in the waiting state until I add a date; nudges continue weekly.
++5. "Daily until done" reminders are a per-item override I ask for; the default for to-dos is the 3-day digest window.
++6. Health items are not hidden from the shared calendar, since only we two see it.
+-- 
+2.43.0
+
